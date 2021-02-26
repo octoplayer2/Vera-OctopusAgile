@@ -17,6 +17,7 @@
 --	change the Product and Tariff to the appropriate ones for your account (See your Octopus Dashboard for the values)
 -- 	Press Submit on the Scene editor and ensure that Vera reloads. 
 --	After 30s the main body willl be called for the first time, the variables will be created and the data fetched
+--	To force an update of  the Variables, edit the ValidTilEpoch value to something small, eg delete last digit
 -- While code is running:
 --	The code will call itself on the hour and half-hour (with a 5 sec delay to avoid any other actions at those times)
 --	If the prices have been updated, and the Peak slot has finished for the day, then the Price and new Start and End times will be updated
@@ -35,6 +36,7 @@
 -- it will get both of us a useful discount  -- share.octopus.energy/denim-koala-967
 -- 
 -- Version 1.0, Feb 2021 - Initial release
+-- Version 1.1, Feb 2021 - Added Current and Next Price Variables, as suggested by Tony
 
 -- Code Start
 _G.GetAgile = GetAgile -- make function global so it can be re-called
@@ -56,6 +58,8 @@ function GetAgile()
     -- PeakEnd
     -- Lowest Price - pence exc VAT
     -- Lowest Price Start
+    -- CurrentPrice
+    -- NextPrice
 
     -- Inpeak -> 1 when peak pricing applies
     -- PrePeakAlert -> 1 prior to peak
@@ -92,6 +96,10 @@ function GetAgile()
             luup.log("Agile Valid prev: " .. oldValidTil)
 
             Now = os.time()
+            local SlotsToGo = math.floor((ValidTilEpoch - Now) / 1800)   -- Get the number of 30 min slots between now and the latest value 
+            luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo ].value_exc_vat , AgileMeterId)
+            luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo + 1].value_exc_vat , AgileMeterId)
+
             if
                 (ValidTilEpoch > oldValidTil) and
                     (Now > tonumber((luup.variable_get(EMSID, "PeakEndEpoch", AgileMeterId) or 0)))
