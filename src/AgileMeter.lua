@@ -42,6 +42,7 @@ _G.GetAgile = GetAgile -- make function global so it can be re-called
 function GetAgile()
     local json = require("dkjson")
     local tempfile = "/tmp/agile.json"
+    local EMSID = "urn:micasaverde-com:serviceId:EnergyMetering1"
     ------------------------------------------------------------
     --Customise these values for your requirements
     local Product = "AGILE-18-02-21"
