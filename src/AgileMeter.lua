@@ -97,8 +97,8 @@ function GetAgile()
 
             Now = os.time()
             local SlotsToGo = math.floor((ValidTilEpoch - Now) / 1800)   -- Get the number of 30 min slots between now and the latest value 
-            luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo ].value_exc_vat , AgileMeterId)
-            luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo + 1].value_exc_vat , AgileMeterId)
+            luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_exc_vat , AgileMeterId)
+            luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_exc_vat , AgileMeterId)
 
             if
                 (ValidTilEpoch > oldValidTil) and
