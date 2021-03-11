@@ -37,9 +37,20 @@
 -- 
 -- Version 1.0, Feb 2021 - Initial release
 -- Version 1.1, Feb 2021 - Added Current and Next Price Variables, as suggested by Tony
+-- Version 1.2, Mar 2021 - Added Vat inc option. Corrected error in min for Epoch conversion. Force reload of values on reboot. 
+--                      - Ignore values > 24hrs ahead, modify peak detection to allow for restart during peak
 
 -- Code Start
 _G.GetAgile = GetAgile -- make function global so it can be re-called
+    --Customise these values for your requirements
+local Product = "AGILE-18-02-21"
+local Tariff = "E-1R-AGILE-18-02-21-H"
+local PriceIncVAT = True
+local PeakLevel = 21 -- above this level assumed to be in Peak rate
+local PeakAlert = 1 -- number of halfhours before peak
+local NCheapPeriods = 8 -- Cheapest period for N halfhours, eg 8 == 4 hours
+local AgileMeterId = TRV2["AgileMeter"] -- Insert Device ID of Agile Meter... Could make this autmatic one day
+    -------------------------------------------------------------
 
 function GetAgile()
     local json = require("dkjson")
@@ -49,14 +60,15 @@ function GetAgile()
     --Customise these values for your requirements
     local Product = "AGILE-18-02-21"
     local Tariff = "E-1R-AGILE-18-02-21-H"
-    local PeakLevel = 20 -- above this level assumed to be in Peak rate
-    local PeakAlert = 2 -- number of halfhours before peak
+    local PriceIncVAT = True
+    local PeakLevel = 25 -- above this level assumed to be in Peak rate
+    local PeakAlert = 1 -- number of halfhours before peak
     local NCheapPeriods = 8 -- Cheapest period for N halfhours, eg 8 == 4 hours
     local AgileMeterId = TRV2["AgileMeter"] -- Insert Device ID of Agile Meter... Could make this autmatic one day
     -------------------------------------------------------------
     -- PeakStart
     -- PeakEnd
-    -- Lowest Price - pence exc VAT
+    -- Lowest Price - pence inc or exc VAT
     -- Lowest Price Start
     -- CurrentPrice
     -- NextPrice
@@ -70,7 +82,7 @@ function GetAgile()
     local retData, js_res
     local price, LowestPrice = 0, math.huge
     local LowestPriceStart
-    local PeakStart, PeakEnd, CheapStart = "", ""
+    local PeakStart, PeakEnd, CheapStart = "", "H"
     local _NHrSum, _NHrMin
     local PeakStartEpoch, PeakEndEpoch, CheapStartEpoch
 
@@ -90,16 +102,20 @@ function GetAgile()
             ValidTil = js_res.results[1].valid_to -- extract the end time
             local Year, Month, Day, Hour, Mins, Secs =
                 string.match(ValidTil, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
-            ValidTilEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, mins = Mins, secs = Secs}) -- convert to Unix timestamp format
+            ValidTilEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
             luup.log("Agile Valid til: " .. Year .. Month .. Day .. Hour .. Mins .. Secs .. ", " .. ValidTilEpoch)
             local oldValidTil = (tonumber((luup.variable_get(EMSID, "ValidTilEpoch", AgileMeterId))) or 0)
             luup.log("Agile Valid prev: " .. oldValidTil)
 
             Now = os.time()
             local SlotsToGo = math.floor((ValidTilEpoch - Now) / 1800)   -- Get the number of 30 min slots between now and the latest value 
-            luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_exc_vat , AgileMeterId)
-            luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_exc_vat , AgileMeterId)
-
+            if PriceIncVat then
+                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_inc_vat , AgileMeterId)
+                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_inc_vat , AgileMeterId)
+            else
+                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_exc_vat , AgileMeterId)
+                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_exc_vat , AgileMeterId)
+            end
             if
                 (ValidTilEpoch > oldValidTil) and
                     (Now > tonumber((luup.variable_get(EMSID, "PeakEndEpoch", AgileMeterId) or 0)))
@@ -108,9 +124,13 @@ function GetAgile()
                 luup.variable_set(EMSID, "ValidTil", Hour .. ":" .. Mins .. "/" .. Day, AgileMeterId)
 
                 _NHrMin = math.huge -- just a large value to start
-
-                for i = 1, 48 do
-                    price = js_res.results[i].value_exc_vat
+                i = math.max(1,SlotsToGo-47)  --Start with 24 hrs from Now, or first value
+                repeat
+                    if PriceIncVat then
+                        price = js_res.results[i].value_inc_vat
+                    else
+                        price = js_res.results[i].value_exc_vat
+                    end
                     luup.log("Agile price from = " .. js_res.results[i].valid_from .. ": " .. price)
                     if price < LowestPrice then
                         LowestPrice = price
@@ -118,8 +138,13 @@ function GetAgile()
                     end
                     if price > PeakLevel then
                         PeakStart = js_res.results[i].valid_from -- update this all the time that the value is above avg
-                        if PeakEnd == "" then
+                        if PeakEnd == "L" then -- has just gone high
                             PeakEnd = js_res.results[i].valid_to
+                        end
+                    else
+                        if PeakEnd == "H" then -- first sample to go low
+                            PeakEnd = "L"
+
                         end
                     end
 
@@ -135,7 +160,9 @@ function GetAgile()
                         _NHrMin = _NHrSum
                         CheapStart = js_res.results[i + NCheapPeriods - 1].valid_from
                     end
-                end
+                    i = i+1
+                until i > SlotsToGo and price <= PeakLevel  -- until now, or if in a peak, go to the start of the peak
+
 
                 --luup.log("Agile lowest price = " .. LowestPrice .. " @ " .. LowestPriceStart)
                 --luup.log("Agile Peak start = " .. PeakStart )
@@ -150,13 +177,13 @@ function GetAgile()
                 Year, Month, Day, Hour, Mins, Secs =
                     string.match(PeakStart, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
                 luup.log("Agile Peak Start: " .. Year .. Month .. Day .. Hour .. Mins .. Secs)
-                PeakStartEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, mins = Mins, secs = Secs}) -- convert to Unix timestamp format
+                PeakStartEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
                 luup.variable_set(EMSID, "PeakStart", Hour .. ":" .. Mins .. " /" .. Day, AgileMeterId)
                 luup.variable_set(EMSID, "PeakStartEpoch", PeakStartEpoch, AgileMeterId)
 
                 Year, Month, Day, Hour, Mins, Secs =
                     string.match(PeakEnd, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
-                PeakEndEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, mins = Mins, secs = Secs}) -- convert to Unix timestamp format
+                PeakEndEpoch = os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
                 luup.variable_set(EMSID, "PeakEnd", Hour .. ":" .. Mins, AgileMeterId)
                 luup.variable_set(EMSID, "PeakEndEpoch", PeakEndEpoch, AgileMeterId)
 
@@ -165,20 +192,21 @@ function GetAgile()
                 Year, Month, Day, Hour, Mins, Secs =
                     string.match(LowestPriceStart, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
                 LowestPriceStart =
-                    os.time({year = Year, month = Month, day = Day, hour = Hour, mins = Mins, secs = Secs}) -- convert to Unix timestamp format
+                    os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
                 luup.variable_set(EMSID, "LowestPriceStart", Hour .. ":" .. Mins, AgileMeterId)
                 luup.variable_set(EMSID, "LowestPriceStartEpoch", LowestPriceStart, AgileMeterId)
 
                 Year, Month, Day, Hour, Mins, Secs =
                     string.match(CheapStart, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
                 CheapStartEpoch =
-                    os.time({year = Year, month = Month, day = Day, hour = Hour, mins = Mins, secs = Secs}) -- convert to Unix timestamp format
+                    os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
                 luup.variable_set(EMSID, "CheapStart", Hour .. ":" .. Mins, AgileMeterId)
                 luup.variable_set(EMSID, "CheapStartEpoch", CheapStartEpoch, AgileMeterId)
 
                 luup.variable_set(EMSID, "ValidTilEpoch", ValidTilEpoch, AgileMeterId) --finally, update timestamp so as not to repeat decode
             end
         end
+        
     end
 
     --------------
@@ -187,18 +215,23 @@ function GetAgile()
     PeakStartEpoch = tonumber((luup.variable_get(EMSID, "PeakStartEpoch", AgileMeterId))) or 0
     if Now > PeakStartEpoch and Now < tonumber((luup.variable_get(EMSID, "PeakEndEpoch", AgileMeterId))) then
         luup.variable_set(EMSID, "InPeak", 1, AgileMeterId)
+        luup.variable_set(EMSID, "Status", "In Peak", AgileMeterId)
+        
     else
         luup.variable_set(EMSID, "InPeak", 0, AgileMeterId)
+        luup.variable_set(EMSID, "Status", "Standard", AgileMeterId)
     end
 
     if Now > PeakStartEpoch - PeakAlert * 1800 and Now < PeakStartEpoch then
         luup.variable_set(EMSID, "PrePeakAlert", 1, AgileMeterId)
+        luup.variable_set(EMSID, "Status", "In PrePeak", AgileMeterId)
     else
         luup.variable_set(EMSID, "PrePeakAlert", 0, AgileMeterId)
     end
     CheapStartEpoch = tonumber((luup.variable_get(EMSID, "CheapStartEpoch", AgileMeterId))) or 0
     if Now > CheapStartEpoch and Now < CheapStartEpoch + 1800 * NCheapPeriods then
         luup.variable_set(EMSID, "InLowest", 1, AgileMeterId)
+        luup.variable_set(EMSID, "Status", "Off Peak", AgileMeterId)
     else
         luup.variable_set(EMSID, "InLowest", 0, AgileMeterId)
     end
@@ -217,5 +250,8 @@ end
 local interval = 30 -- wait 30s before first call
 luup.log("Agile... call in: " .. interval)
 luup.call_delay("GetAgile", interval)
+luup.variable_set(EMSID, "ValidTilEpoch", 0, AgileMeterId)  -- Create values, and set to zero if existing to force an update
+luup.variable_set(EMSID, "PeakEndEpoch", 0, AgileMeterId)
+
 
 return
