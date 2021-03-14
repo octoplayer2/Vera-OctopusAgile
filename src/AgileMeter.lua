@@ -48,6 +48,8 @@
 -- Version 1.2, Mar 2021 - Added Vat inc option. Corrected error in min for Epoch conversion. Force reload of values on reboot. 
 --                      - Ignore values > 24hrs ahead, modify peak detection to allow for restart during peak
 -- Version 1.3, Mar 2021 - Fixed bug in Vat inc option. Removed duplicate declaration. Added Pricing display string
+-- Version 1.4, Mar 2021 - Fixed dupliation of CurrentPrice in Pricing
+
 
 -- Code Start
 _G.GetAgile = GetAgile -- make function global so it can be re-called
@@ -117,8 +119,8 @@ function GetAgile()
                 luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_exc_vat, AgileMeterId)
                 luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_exc_vat, AgileMeterId)
             end
-            luup.variable_set(EMSID, "Pricing", string.format("Price now=%.2f, next=%.2fp",luup.variable_get(EMSID, "CurrentPrice",AgileMeterId),
-                luup.variable_get(EMSID, "CurrentPrice",AgileMeterId)), AgileMeterId)
+            luup.variable_set(EMSID, "Pricing", string.format("Price now=%.2f, next=%.2fp",luup.variable_get(EMSID, "CurrentPrice", AgileMeterId),
+                luup.variable_get(EMSID, "NextPrice", AgileMeterId)), AgileMeterId)
             
             if (ValidTilEpoch > oldValidTil) and
                     (Now > tonumber((luup.variable_get(EMSID, "PeakEndEpoch", AgileMeterId) or 0)))
