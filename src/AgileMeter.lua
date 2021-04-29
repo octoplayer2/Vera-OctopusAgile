@@ -53,6 +53,9 @@
 -- version 1.6, Mar 2021 - Added timestamp for use by heartbeat, as have noticed an update was skipped
 --                          Run time calcs in Zulu time, as Octopus data is always Z. Change display times to work for BST - Thanks CadWizzard
 -- Version 1.7, Apr 2021 - Changed Peak time detection algorithm, eg 13 apr had 2 peaks. Formatted hour:min to avoid 24:30 and 0:0
+-- Version 1.8, Apr 2021 - Converted CurrentPrice retrieval to a number - may have been stopping InPeak being set
+-- Version 1.9, Apr 2021 - Corrected offset on Current and Next Price, they were 1/2 hour early
+
 
 
 -- Code Start
@@ -123,13 +126,13 @@ function GetAgile()
             local oldValidTil = (tonumber((luup.variable_get(EMSID, "ValidTilEpoch", AgileMeterId))) or 0)
             --luup.log("Agile Valid prev: " .. oldValidTil)
 
-            local SlotsToGo = math.floor((ValidTilEpoch - NowZ) / 1800) +1   -- Get the number of 30 min slots between now and the latest value 
+            local SlotsToGo = math.floor((ValidTilEpoch - NowZ) / 1800) + 1   -- Get the number of 30 min slots between now and the latest value 
             if PriceIncVAT then
-                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_inc_vat, AgileMeterId)
-                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_inc_vat, AgileMeterId)
+                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo ].value_inc_vat, AgileMeterId)
+                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo - 1].value_inc_vat, AgileMeterId)
             else
-                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo + 1].value_exc_vat, AgileMeterId)
-                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo].value_exc_vat, AgileMeterId)
+                luup.variable_set(EMSID, "CurrentPrice", js_res.results[SlotsToGo].value_exc_vat, AgileMeterId)
+                luup.variable_set(EMSID, "NextPrice", js_res.results[SlotsToGo - 1].value_exc_vat, AgileMeterId)
             end
             luup.variable_set(EMSID, "Pricing", string.format("Price now=%.2f, next=%.2fp",luup.variable_get(EMSID, "CurrentPrice", AgileMeterId),
             luup.variable_get(EMSID, "NextPrice", AgileMeterId)), AgileMeterId)
@@ -226,7 +229,7 @@ function GetAgile()
 
     PeakStartEpoch = tonumber((luup.variable_get(EMSID, "PeakStartEpoch", AgileMeterId))) or 0
     if NowZ > PeakStartEpoch and NowZ < tonumber((luup.variable_get(EMSID, "PeakEndEpoch", AgileMeterId))) and -- time is within peak limits
-                    luup.variable_get(EMSID, "CurrentPrice", AgileMeterId) > PeakLevel then  -- Price has not actually exceeded peak threshold
+                    tonumber((luup.variable_get(EMSID, "CurrentPrice", AgileMeterId))) > PeakLevel then  -- Price has actually exceeded peak threshold
         luup.variable_set(EMSID, "InPeak", 1, AgileMeterId)
         luup.variable_set(EMSID, "Status", "In Peak", AgileMeterId)
         
