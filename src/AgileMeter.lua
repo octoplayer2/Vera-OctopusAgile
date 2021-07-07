@@ -56,11 +56,17 @@
 -- Version 1.8, Apr 2021 - Converted CurrentPrice retrieval to a number - may have been stopping InPeak being set
 -- Version 1.9, Apr 2021 - Corrected offset on Current and Next Price, they were 1/2 hour early
 -- Version 1.10 May 2021 - Had missed update of LowestPrice variable.
-
-
+-- version 1.11 June 2021- replaced Curl with http request to try and avoid getting a crash with deadlock
+-- version 1.12 June 2021- Fix for missed updated if the Peak had not ended within 24hours, resulting in index of 0. Deadlock crash NOT resolved.
+-- version 1.13 July 2012- Timeout added for deadlock
 
 -- Code Start
 _G.GetAgile = GetAgile -- make function global so it can be re-called
+--local http = require("socket.http")
+local ltn12 = require("ltn12")
+local http = require("socket.http")
+http.TIMEOUT = 5   --trying to avoid the  occasional deadlock
+local https = require("ssl.https")
 
 --Customise these input values for your requirements
 local Product = "AGILE-18-02-21"
@@ -90,35 +96,54 @@ local AgileMeterId = TRV2["AgileMeter"] -- Insert Device ID of Agile Meter eg 24
 
 function GetAgile()
     local json = require("dkjson")
-    local tempfile = "/tmp/agile.json"
+    --local tempfile = "/tmp/agile.json"
     local EMSID = "urn:micasaverde-com:serviceId:EnergyMetering1"
 
-    local retData, js_res
+    local js_res
     local price, LowestPrice = 0, math.huge
-    local LowestPriceStartEpoch, _PeakEnd
+    local LowestPriceStartEpoch
     local HighestPrice, PeakStart, PeakEnd, HighestPriceSlot, CheapStart = 0, 0, 0
     local _NHrSum, _NHrMin
     local PeakStartEpoch, PeakEndEpoch, CheapStartEpoch, Now, NowZ
+  
+    local URL = 'https://api.octopus.energy/v1/products/' ..
+        Product .. '/electricity-tariffs/' .. Tariff .. '/standard-unit-rates/'
+--    URL = "https://api.octopus.energy/v1/products/AGILE-18-02-21/electricity-tariffs/E-1R-AGILE-18-02-21-H/standard-unit-rates/"
+	luup.log("Agile URL " .. URL)
 
-    local SMC =
-        'curl "https://api.octopus.energy/v1/products/' ..
-        Product .. "/electricity-tariffs/" .. Tariff .. '/standard-unit-rates/"'
-    luup.log("Agile SMC: " .. SMC)
+	local result = {}
 
-    os.execute(SMC .. " > " .. tempfile)
-    luup.log("Agile HTTP Request done")
+local retCode, HttpCode = https.request{
+		url =  URL,
+		--  --URL,
+		protocol = "any",
+--		options =  {"all", "no_sslv2", "no_sslv3"},
+        verify = "none",
+        sink=ltn12.sink.table(result)
+	}
 
-    for dataRaw in io.lines(tempfile) do
-        if dataRaw ~= nil then
-            luup.log("Agile Rate Return:" .. dataRaw)
-            js_res = json.decode(dataRaw)
-            Now = os.time() 
-            local t = os.date("*t", Now)
-            if t.isdst then -- In British Summer Time, take off one hour for Zulu
+	Now = os.time() 
+	local t = os.date("*t", Now)
+    if t.isdst then -- In British Summer Time, take off one hour for Zulu
                 NowZ = Now - 3600
-            else
+    else
                 NowZ = Now
-            end
+    end
+
+   luup.log("Agile HTTP Request done") 
+	if retCode == nil then 
+	    luup.log("Agile Ret Code is NIL")
+	    luup.log(HttpCode)
+	    luup.log(result)
+	end
+	if HttpCode == 200 then
+
+    local dataRaw = table.concat(result)
+--    for dataRaw in io.lines(tempfile) do
+        if dataRaw ~= nil then
+          luup.log("Agile Rate Return:" .. dataRaw)
+          js_res = json.decode(dataRaw)
+          if js_res ~= nil then
 
             ValidTil = js_res.results[1].valid_to -- extract the end time
             local Year, Month, Day, Hour, Mins, Secs =
@@ -191,7 +216,8 @@ function GetAgile()
                     end
 
                     i = i-1
-                until i < math.max(1,SlotsToGo-48)  --End with 24 hrs from Now, or first value
+                until i < math.max(1,SlotsToGo-48)  --End with 24 hrs from Now, or first array value
+                PeakEnd = math.max(PeakEnd,i)  -- If the peak had not ended within 24hrs, then set to the end for now
 
                 --luup.log("Agile lowest price = " .. LowestPrice .. " @ " .. LowestPriceStart)
                 --luup.log("Agile Peak start = " .. PeakStart )
@@ -209,6 +235,7 @@ function GetAgile()
                 ExtractDate (CheapStart, "CheapStart")
                 ExtractDate (ValidTil, "ValidTil", true)
             end
+          end
         end
         
     end
@@ -219,7 +246,6 @@ function GetAgile()
     luup.call_delay("GetAgile", interval + 5) -- few sec delay to avoid other events
     luup.variable_set(EMSID, "NextUpdate", Now + interval + 5 , AgileMeterId)   
  
-
     --------------
     --Check if we are now in any particular charging zone
 
@@ -264,7 +290,7 @@ function ExtractDate(sTimeStamp, StampName, Add_day)
                 string.match(sTimeStamp, "(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)") -- split timestamp into components
     local Epoch = os.time({year = Year, month = Month, day = Day, hour = Hour, min = Mins, sec = Secs}) -- convert to Unix timestamp format
 
-    local t = os.date("*t", Epoch)  -- Convert back to time table to check if in BST
+    local t = os.date("*t", Epoch)  -- Convert back to time table to chack if in BST
     if t.isdst then -- In British Summer Time, add one hour
         Hour = (Hour + 1) % 24  -- roll back to zero
     end
@@ -284,6 +310,5 @@ luup.log("Agile... call in: " .. interval)
 luup.call_delay("GetAgile", interval)
 luup.variable_set(EMSID, "ValidTilEpoch", 0, AgileMeterId)  -- Create values, and set to zero if existing to force an update
 luup.variable_set(EMSID, "PeakEndEpoch", 0, AgileMeterId)
-
 
 return
